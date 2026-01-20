@@ -1,2 +1,55 @@
+# Existing ignores
 /tmp/
 PROMPT.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# uv
+.uv/
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Config (user-specific)
+config.yml
+
+# Socket file
+perception.sock
+
+# Models (downloaded on first run by faster_whisper)
+# These are stored in ~/.cache/huggingface/hub/

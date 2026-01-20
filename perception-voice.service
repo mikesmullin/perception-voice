@@ -1,0 +1,28 @@
+# perception-voice systemd user service
+# 
+# Installation:
+#   1. Copy this file to ~/.config/systemd/user/perception-voice.service
+#   2. Edit the ExecStart path to match your installation
+#   3. Enable and start:
+#      systemctl --user daemon-reload
+#      systemctl --user enable perception-voice
+#      systemctl --user start perception-voice
+#
+# View logs:
+#   journalctl --user -u perception-voice -f
+
+[Unit]
+Description=Perception Voice - Speech to Text Service
+After=sound.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/perception-voice serve
+Restart=on-failure
+RestartSec=5
+
+# Ensure audio access
+Environment=PULSE_SERVER=unix:/run/user/%U/pulse/native
+
+[Install]
+WantedBy=default.target

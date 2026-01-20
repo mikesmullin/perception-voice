@@ -1,0 +1,44 @@
+[project]
+name = "perception-voice"
+version = "0.1.0"
+description = "System-level speech-to-text service with shared GPU model"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Mike Smullin", email = "mike@smullindesign.com"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+keywords = ["transcription", "audio", "speech-to-text", "systemd", "ipc"]
+
+dependencies = [
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+    "numpy>=1.24.0",
+    "sounddevice>=0.4.6",
+    "faster-whisper>=0.10.0",
+    "pyyaml>=6.0.0",
+    "webrtcvad-wheels>=2.0.0",
+]
+
+[project.scripts]
+perception-voice = "perception_voice.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mikesmullin/perception-voice"
+Repository = "https://github.com/mikesmullin/perception-voice"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["perception_voice*"]
