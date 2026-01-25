@@ -126,10 +126,19 @@ class Transcriber:
         if not self.is_running:
             return
         
+        logger.info("Stopping transcriber...")
         self.is_running = False
+        
+        # Stop sounddevice streams to unblock the recording thread
+        try:
+            sd.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping sounddevice: {e}")
         
         if self._recording_thread:
             self._recording_thread.join(timeout=2.0)
+            if self._recording_thread.is_alive():
+                logger.warning("Recording thread did not stop in time")
         
         logger.info(f"Transcriber stopped (transcriptions: {self.transcription_count})")
     

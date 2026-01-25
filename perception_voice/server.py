@@ -9,8 +9,10 @@ Main server daemon that:
 """
 
 import logging
+import os
 import signal
 import socket
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
@@ -206,6 +208,11 @@ class Server:
                 pass
         
         logger.info("Server stopped")
+        
+        # Force exit to ensure all threads terminate
+        # This is necessary because sounddevice and other libraries may have
+        # background threads that don't respond to normal shutdown
+        os._exit(0)
 
 
 def run_server(config: Config, verbose: bool = False) -> None:

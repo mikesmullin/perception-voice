@@ -28,12 +28,6 @@ Using `uv`:
 uv tool install --editable . --with webrtcvad-wheels
 ```
 
-Or with pip:
-
-```bash
-pip install -e .
-```
-
 ## Quick Start
 
 ### 1. Configure (optional)
