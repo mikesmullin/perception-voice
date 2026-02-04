@@ -38,8 +38,8 @@ class TranscriptionConfig:
     model: str
     device: str
     compute_type: str
-    language: str
     beam_size: int
+    language: Optional[str] = None
 
 
 @dataclass
