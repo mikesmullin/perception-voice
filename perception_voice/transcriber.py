@@ -9,6 +9,7 @@ import collections
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import numpy as np
@@ -243,14 +244,17 @@ class Transcriber:
         if self.verbose:
             logger.info(f"Recording stopped ({recording_duration:.2f}s), transcribing...")
         
+        # Capture utterance start time as datetime
+        utterance_start = datetime.fromtimestamp(self._recording_start_time, tz=timezone.utc).astimezone()
+        
         # Transcribe in separate thread
         threading.Thread(
             target=self._transcribe,
-            args=(audio_data,),
+            args=(audio_data, utterance_start),
             daemon=True,
         ).start()
     
-    def _transcribe(self, audio: np.ndarray) -> None:
+    def _transcribe(self, audio: np.ndarray, utterance_start: datetime) -> None:
         """Transcribe audio with Whisper model"""
         try:
             segments, info = self._model.transcribe(
@@ -276,7 +280,7 @@ class Transcriber:
             
             if self.on_transcription:
                 try:
-                    self.on_transcription(full_text)
+                    self.on_transcription(full_text, utterance_start)
                 except Exception as e:
                     logger.error(f"Error in transcription callback: {e}")
         

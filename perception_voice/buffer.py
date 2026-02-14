@@ -33,9 +33,11 @@ class Utterance:
         return json.dumps({"ts": ts_str, "text": self.text})
     
     @classmethod
-    def from_text(cls, text: str) -> "Utterance":
-        """Create utterance with current timestamp"""
-        return cls(timestamp=datetime.now(timezone.utc).astimezone(), text=text)
+    def from_text(cls, text: str, timestamp: Optional[datetime] = None) -> "Utterance":
+        """Create utterance with given or current timestamp"""
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc).astimezone()
+        return cls(timestamp=timestamp, text=text)
 
 
 class TranscriptionBuffer:
@@ -75,12 +77,13 @@ class TranscriptionBuffer:
         normalized = normalize_phrase(text)
         return normalized in self._discard_phrases
     
-    def add(self, text: str) -> bool:
+    def add(self, text: str, timestamp: Optional[datetime] = None) -> bool:
         """
         Add a new transcribed utterance
         
         Args:
             text: The transcribed text
+            timestamp: When the utterance started (default: now)
         
         Returns:
             True if added, False if discarded
@@ -95,7 +98,7 @@ class TranscriptionBuffer:
             logger.debug(f"Discarded phrase: {text!r}")
             return False
         
-        utterance = Utterance.from_text(text)
+        utterance = Utterance.from_text(text, timestamp)
         
         with self._lock:
             self._utterances.append(utterance)
@@ -120,7 +123,7 @@ class TranscriptionBuffer:
         """
         Get all utterances since the client's read marker as JSONL
         
-        Also updates the read marker to now.
+        Updates the read marker to the latest returned utterance's timestamp.
         
         Args:
             uid: Unique client identifier
@@ -128,27 +131,28 @@ class TranscriptionBuffer:
         Returns:
             JSONL string of utterances, or empty string if none
         """
-        now = datetime.now(timezone.utc).astimezone()
-        
         with self._lock:
             marker = self._read_markers.get(uid)
             
             if marker is None:
                 # No marker set, return empty and set marker to now
-                self._read_markers[uid] = now
+                self._read_markers[uid] = datetime.now(timezone.utc).astimezone()
                 return ""
             
             # Find utterances since marker
             result_lines = []
+            latest_timestamp = marker
             for utterance in self._utterances:
                 if utterance.timestamp > marker:
                     result_lines.append(utterance.to_jsonl())
+                    if utterance.timestamp > latest_timestamp:
+                        latest_timestamp = utterance.timestamp
             
-            # Update marker to now
-            self._read_markers[uid] = now
-        
-        if result_lines:
-            logger.debug(f"Returning {len(result_lines)} utterances for '{uid}'")
+            # Update marker to latest returned utterance (not "now")
+            # This prevents the marker from racing ahead of in-flight transcriptions
+            if result_lines:
+                self._read_markers[uid] = latest_timestamp
+                logger.debug(f"Returning {len(result_lines)} utterances for '{uid}'")
         
         return "\n".join(result_lines)
     

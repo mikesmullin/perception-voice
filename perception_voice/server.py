@@ -105,10 +105,10 @@ class Server:
         logger.info(f"Received signal {signum}, shutting down...")
         self._running = False
     
-    def _on_transcription(self, text: str) -> None:
+    def _on_transcription(self, text: str, timestamp=None) -> None:
         """Callback for new transcriptions"""
         if self._buffer:
-            added = self._buffer.add(text)
+            added = self._buffer.add(text, timestamp)
             if self.verbose:
                 word_count = len(text.split())
                 if added:
