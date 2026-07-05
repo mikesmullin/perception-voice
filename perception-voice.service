@@ -17,6 +17,7 @@ After=sound.target
 
 [Service]
 Type=simple
+WorkingDirectory=/workspace/perception-voice
 ExecStart=%h/.local/bin/perception-voice serve
 Restart=on-failure
 RestartSec=5

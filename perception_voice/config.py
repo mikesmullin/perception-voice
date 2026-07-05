@@ -86,15 +86,22 @@ class Config:
         Raises:
             SystemExit: If config file not found
         """
-        # Find config file
+        # Find config file. When installed as a tool (uv tool install), the
+        # package parent is site-packages — not the project root — so search
+        # a fallback chain: explicit -c, $PERCEPTION_VOICE_CONFIG, cwd
+        # (systemd unit sets WorkingDirectory to the checkout), package parent.
+        import os
         if config_path is not None:
             resolved_path = config_path
         else:
-            # Resolve relative to package location (project root is parent of perception_voice/)
             package_dir = Path(__file__).parent
-            project_root = package_dir.parent
-            resolved_path = project_root / "config.yml"
-        
+            candidates = []
+            if os.environ.get("PERCEPTION_VOICE_CONFIG"):
+                candidates.append(Path(os.environ["PERCEPTION_VOICE_CONFIG"]))
+            candidates.append(Path.cwd() / "config.yml")
+            candidates.append(package_dir.parent / "config.yml")
+            resolved_path = next((c for c in candidates if c.exists()), candidates[-1])
+
         if not resolved_path.exists():
             logger.error(f"Config file not found: {resolved_path}")
             logger.error("Please copy config.example.yml to config.yml and customize it.")
