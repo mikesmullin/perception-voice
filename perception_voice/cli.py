@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from perception_voice import __version__
-from perception_voice.client import EXIT_ERROR, EXIT_USAGE, client_get, client_set
+from perception_voice.client import EXIT_ERROR, EXIT_USAGE, client_get, client_set, client_stream
 from perception_voice.config import Config
 from perception_voice.server import run_server
 
@@ -91,7 +91,18 @@ def create_parser() -> argparse.ArgumentParser:
         "uid",
         help="Unique client identifier",
     )
-    
+
+    # client stream
+    stream_parser = client_subparsers.add_parser(
+        "stream",
+        help="Subscribe to a push stream and print it (debug)",
+    )
+    stream_parser.add_argument(
+        "channel",
+        choices=["levels", "words"],
+        help="Stream channel",
+    )
+
     return parser
 
 
@@ -129,6 +140,9 @@ def main(args: Optional[List[str]] = None) -> int:
         
         elif parsed.client_command == "get":
             return client_get(config, parsed.uid)
+
+        elif parsed.client_command == "stream":
+            return client_stream(config, parsed.channel)
         
         else:
             print(f"Unknown client command: {parsed.client_command}", file=sys.stderr)

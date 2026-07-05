@@ -16,7 +16,7 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
-from perception_voice.config import AudioConfig, TranscriptionConfig, VADConfig
+from perception_voice.config import AudioConfig, RealtimeConfig, TranscriptionConfig, VADConfig
 from perception_voice.vad import VoiceActivityDetector
 
 logger = logging.getLogger(__name__)
@@ -40,22 +40,27 @@ class Transcriber:
         vad_config: VADConfig,
         on_transcription: Optional[Callable[[str], None]] = None,
         verbose: bool = False,
+        stream_hub=None,
+        realtime_config: Optional[RealtimeConfig] = None,
     ):
         """
         Initialize transcriber
-        
+
         Args:
             audio_config: Audio settings
             transcription_config: Whisper model settings
             vad_config: VAD settings
             on_transcription: Callback for completed transcriptions
             verbose: Enable verbose logging
+            stream_hub: Optional StreamHub for level/word push streams
+            realtime_config: Optional secondary-model partial-decode settings
         """
         self.audio_config = audio_config
         self.transcription_config = transcription_config
         self.vad_config = vad_config
         self.on_transcription = on_transcription
         self.verbose = verbose
+        self._hub = stream_hub
         
         # State
         self.is_running = False
@@ -98,6 +103,15 @@ class Transcriber:
             compute_type=transcription_config.compute_type,
         )
         logger.info(f"Whisper model loaded: {transcription_config.model}")
+
+        # Secondary realtime model: decodes the in-progress utterance buffer
+        # periodically so `subscribe words` subscribers get partial
+        # hypotheses before the VAD tail closes (Ada latency path).
+        self._partial_decoder: Optional[_PartialDecoder] = None
+        if stream_hub and realtime_config and realtime_config.enabled:
+            self._partial_decoder = _PartialDecoder(
+                self, realtime_config, transcription_config, stream_hub
+            )
     
     def start(self) -> None:
         """Start the transcriber"""
@@ -172,29 +186,41 @@ class Transcriber:
         def audio_callback(indata, frames, time_info, status):
             if status:
                 logger.warning(f"Audio status: {status}")
-            
+
             # Extract mono audio
             audio_chunk = indata[:, 0].copy()
-            
+
             # Add to circular buffer (for pre-recording)
             self._audio_buffer.append(audio_chunk)
-            
+
             # Check for speech
             is_speech, confidence = self._vad.is_speech(audio_chunk)
-            
+
+            was_recording = self.is_recording
+
             if is_speech:
                 if not self.is_recording:
                     self._start_recording()
-                
+
                 self._frames.append(audio_chunk)
                 self._silence_count = 0
-                
+
             elif self.is_recording:
                 self._frames.append(audio_chunk)
                 self._silence_count += 1
-                
+
                 if self._silence_count >= self._max_silence_chunks:
                     self._stop_recording()
+
+            # Level stream: copy + enqueue only (feature math happens on the
+            # hub worker, never on this realtime thread)
+            if self._hub:
+                self._hub.on_audio_chunk(
+                    audio_chunk,
+                    vad_active=is_speech,
+                    started=(not was_recording and self.is_recording),
+                    ended=(was_recording and not self.is_recording),
+                )
         
         try:
             with sd.InputStream(
@@ -244,17 +270,19 @@ class Transcriber:
         if self.verbose:
             logger.info(f"Recording stopped ({recording_duration:.2f}s), transcribing...")
         
-        # Capture utterance start time as datetime
+        # Capture utterance start/end times as datetimes
         utterance_start = datetime.fromtimestamp(self._recording_start_time, tz=timezone.utc).astimezone()
-        
+        utterance_end = datetime.now(tz=timezone.utc).astimezone()
+
         # Transcribe in separate thread
         threading.Thread(
             target=self._transcribe,
-            args=(audio_data, utterance_start),
+            args=(audio_data, utterance_start, utterance_end),
             daemon=True,
         ).start()
     
-    def _transcribe(self, audio: np.ndarray, utterance_start: datetime) -> None:
+    def _transcribe(self, audio: np.ndarray, utterance_start: datetime,
+                    utterance_end: Optional[datetime] = None) -> None:
         """Transcribe audio with Whisper model"""
         try:
             segments, info = self._model.transcribe(
@@ -280,7 +308,7 @@ class Transcriber:
             
             if self.on_transcription:
                 try:
-                    self.on_transcription(full_text, utterance_start)
+                    self.on_transcription(full_text, utterance_start, utterance_end)
                 except Exception as e:
                     logger.error(f"Error in transcription callback: {e}")
         
@@ -295,3 +323,69 @@ class Transcriber:
             "is_recording": self.is_recording,
             "vad_stats": self._vad.get_statistics(),
         }
+
+
+class _PartialDecoder:
+    """
+    Secondary (small) Whisper model that re-decodes the accumulating
+    utterance buffer every `interval` seconds while recording is active,
+    publishing {"ev": "partial", ...} events to `subscribe words`
+    subscribers. The main model still produces the finalized utterance.
+
+    Same dual-model split /workspace/whisper's config describes
+    (tiny.en preview + large final) — partials are for reacting early,
+    the finalized utterance is what gets committed.
+    """
+
+    def __init__(self, transcriber: Transcriber, realtime_config: RealtimeConfig,
+                 transcription_config: TranscriptionConfig, hub):
+        self._t = transcriber
+        self._cfg = realtime_config
+        self._language = transcription_config.language
+        self._hub = hub
+
+        logger.info(f"Loading realtime Whisper model: {realtime_config.model}")
+        self._model = WhisperModel(
+            realtime_config.model,
+            device=realtime_config.device,
+            compute_type=realtime_config.compute_type,
+        )
+        logger.info(f"Realtime model loaded: {realtime_config.model}")
+
+        self._decoded_chunks = 0
+        threading.Thread(target=self._run, daemon=True, name="partial-decoder").start()
+
+    def _run(self) -> None:
+        while True:
+            time.sleep(self._cfg.interval)
+
+            if not self._t.is_recording:
+                self._decoded_chunks = 0
+                continue
+            if not self._hub.has_subscribers("words"):
+                continue
+
+            # Snapshot the in-progress buffer (list() is atomic under the GIL;
+            # chunks themselves are immutable once appended)
+            frames = list(self._t._frames)
+            if not frames or len(frames) <= self._decoded_chunks:
+                continue
+            self._decoded_chunks = len(frames)
+
+            audio = np.concatenate(frames)
+            try:
+                segments, _ = self._model.transcribe(
+                    audio,
+                    language=self._language,
+                    beam_size=self._cfg.beam_size,
+                    condition_on_previous_text=False,
+                )
+                text = " ".join(s.text.strip() for s in segments).strip()
+            except Exception as e:
+                logger.debug(f"Partial decode error: {e}")
+                continue
+
+            if text:
+                self._hub.publish_words(
+                    {"ev": "partial", "ts": time.time(), "text": text}
+                )

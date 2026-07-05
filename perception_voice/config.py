@@ -51,6 +51,17 @@ class VADConfig:
 
 
 @dataclass
+class RealtimeConfig:
+    """Secondary-model partial-hypothesis decoding (for `subscribe words`)"""
+    enabled: bool = True
+    model: str = "tiny.en"
+    device: str = "cuda"
+    compute_type: str = "float16"
+    interval: float = 0.5
+    beam_size: int = 1
+
+
+@dataclass
 class Config:
     """Main configuration container"""
     server: ServerConfig
@@ -58,6 +69,7 @@ class Config:
     transcription: TranscriptionConfig
     vad: VADConfig
     config_path: Path
+    realtime: RealtimeConfig = field(default_factory=RealtimeConfig)
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "Config":
@@ -96,6 +108,7 @@ class Config:
             audio=AudioConfig(**config_data.get("audio", {})),
             transcription=TranscriptionConfig(**config_data.get("transcription", {})),
             vad=VADConfig(**config_data.get("vad", {})),
+            realtime=RealtimeConfig(**config_data.get("realtime", {})),
             config_path=resolved_path.parent,
         )
     

@@ -26,6 +26,7 @@ from perception_voice.ipc import (
     recv_message,
     send_message,
 )
+from perception_voice.streams import CHANNELS, StreamHub
 from perception_voice.transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class Server:
         self._transcriber: Optional[Transcriber] = None
         self._buffer: Optional[TranscriptionBuffer] = None
         self._accept_thread: Optional[threading.Thread] = None
+        self._hub: Optional[StreamHub] = None
     
     def run(self) -> None:
         """Run the server (blocking)"""
@@ -74,6 +76,9 @@ class Server:
             f"Buffer initialized (retention: {self.config.server.buffer_retention_minutes} min)"
         )
         
+        # Initialize push-stream hub (levels + words subscriptions)
+        self._hub = StreamHub(sample_rate=self.config.audio.sample_rate)
+
         # Initialize transcriber
         self._transcriber = Transcriber(
             audio_config=self.config.audio,
@@ -81,6 +86,8 @@ class Server:
             vad_config=self.config.vad,
             on_transcription=self._on_transcription,
             verbose=self.verbose,
+            stream_hub=self._hub,
+            realtime_config=self.config.realtime,
         )
         
         # Start transcriber
@@ -105,7 +112,7 @@ class Server:
         logger.info(f"Received signal {signum}, shutting down...")
         self._running = False
     
-    def _on_transcription(self, text: str, timestamp=None) -> None:
+    def _on_transcription(self, text: str, timestamp=None, end_timestamp=None) -> None:
         """Callback for new transcriptions"""
         if self._buffer:
             added = self._buffer.add(text, timestamp)
@@ -115,6 +122,20 @@ class Server:
                     logger.info(f"Buffered: {word_count} words")
                 else:
                     logger.info(f"Discarded: {word_count} words (matched discard phrase)")
+
+        # Push to `subscribe words` subscribers (Ada brain) the moment the
+        # utterance is finalized — no polling anywhere in Ada's pipeline
+        if self._hub:
+            import time as _time
+            t_start = timestamp.timestamp() if timestamp else None
+            t_end = end_timestamp.timestamp() if end_timestamp else None
+            self._hub.publish_words({
+                "ev": "utterance",
+                "ts": _time.time(),
+                "text": text,
+                "t_start": t_start,
+                "t_end": t_end,
+            })
     
     def _accept_connections(self) -> None:
         """Accept and handle client connections"""
@@ -136,14 +157,29 @@ class Server:
     
     def _handle_client(self, client_sock: socket.socket) -> None:
         """Handle a single client connection"""
+        handed_off = False
         try:
             request = recv_message(client_sock)
             if not request:
                 return
-            
+
+            # `subscribe` turns the connection into a long-lived push stream
+            # owned by the hub; everything else stays request/response.
+            if request.get("command") == "subscribe":
+                channel = request.get("channel")
+                if channel not in CHANNELS:
+                    send_message(client_sock, make_error_response(
+                        f"unknown channel: {channel} (expected one of {CHANNELS})"
+                    ))
+                    return
+                send_message(client_sock, {"status": "ok", "channel": channel})
+                self._hub.add_subscriber(channel, client_sock)
+                handed_off = True
+                return
+
             response = self._process_request(request)
             send_message(client_sock, response)
-            
+
         except Exception as e:
             logger.error(f"Client handler error: {e}")
             try:
@@ -151,10 +187,11 @@ class Server:
             except Exception:
                 pass
         finally:
-            try:
-                client_sock.close()
-            except Exception:
-                pass
+            if not handed_off:
+                try:
+                    client_sock.close()
+                except Exception:
+                    pass
     
     def _process_request(self, request: dict) -> dict:
         """Process a client request and return response"""

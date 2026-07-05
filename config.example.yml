@@ -62,3 +62,14 @@ vad:
   
   # Use ONNX for faster Silero inference on CPU
   silero_use_onnx: true
+
+realtime:
+  # Secondary small model that decodes the in-progress utterance every
+  # `interval` seconds, pushing partial hypotheses to `subscribe words`
+  # subscribers (Ada). The main model above still produces the final text.
+  enabled: true
+  model: "tiny.en"
+  device: "cuda"
+  compute_type: "float16"
+  interval: 0.5
+  beam_size: 1
