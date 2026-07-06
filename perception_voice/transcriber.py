@@ -6,7 +6,10 @@ and transcribes using faster-whisper.
 """
 
 import collections
+import ctypes
+import glob
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -14,7 +17,33 @@ from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
-from faster_whisper import WhisperModel
+
+
+def _preload_cuda12_libs() -> None:
+    """ctranslate2 dlopens libcublas.so.12 / libcudnn.so.9 by soname with no
+    RPATH into the pip `nvidia` packages, so it only works if something else
+    (e.g. a cu12-flavored torch) already loaded them. A cu13 torch (what a
+    fresh dependency resolve now installs) breaks decode with "Library
+    libcublas.so.12 is not found". Preload the cu12 libs explicitly when the
+    wheels are present; harmless no-op otherwise."""
+    try:
+        import nvidia
+        bases = list(nvidia.__path__)
+    except ImportError:
+        return
+    for rel in ("cublas/lib/libcublasLt.so.12", "cublas/lib/libcublas.so.12",
+                "cudnn/lib/libcudnn.so.9"):
+        for base in bases:
+            for path in glob.glob(os.path.join(base, rel)):
+                try:
+                    ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+
+
+_preload_cuda12_libs()
+
+from faster_whisper import WhisperModel  # noqa: E402  (after CUDA preload)
 
 from perception_voice.config import AudioConfig, RealtimeConfig, TranscriptionConfig, VADConfig
 from perception_voice.vad import VoiceActivityDetector

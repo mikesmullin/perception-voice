@@ -17,8 +17,11 @@ After=sound.target
 
 [Service]
 Type=simple
+# Run from the repo checkout's venv (not the uv tool copy): the tool venv
+# re-resolves dependencies on every reinstall, which is how a cu13 torch
+# slipped in and broke faster-whisper's cu12 CUDA decode.
 WorkingDirectory=/workspace/perception-voice
-ExecStart=%h/.local/bin/perception-voice serve
+ExecStart=/workspace/perception-voice/.venv/bin/perception-voice serve
 Restart=on-failure
 RestartSec=5
 
