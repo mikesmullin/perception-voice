@@ -88,8 +88,14 @@ class Config:
         """
         # Find config file. When installed as a tool (uv tool install), the
         # package parent is site-packages — not the project root — so search
-        # a fallback chain: explicit -c, $PERCEPTION_VOICE_CONFIG, cwd
-        # (systemd unit sets WorkingDirectory to the checkout), package parent.
+        # a fallback chain: explicit -c, $PERCEPTION_VOICE_CONFIG, package
+        # parent (dev checkout), then the well-known repo checkout.
+        #
+        # Deliberately NO cwd fallback: callers spawn this CLI from
+        # arbitrary directories (mari's REPL polls via `perception-voice
+        # client` from /workspace/mari, which has its own unrelated
+        # config.yml), and picking up a foreign config.yml crashes parsing
+        # — that broke every mari voice trigger once.
         import os
         if config_path is not None:
             resolved_path = config_path
@@ -98,8 +104,8 @@ class Config:
             candidates = []
             if os.environ.get("PERCEPTION_VOICE_CONFIG"):
                 candidates.append(Path(os.environ["PERCEPTION_VOICE_CONFIG"]))
-            candidates.append(Path.cwd() / "config.yml")
             candidates.append(package_dir.parent / "config.yml")
+            candidates.append(Path("/workspace/perception-voice/config.yml"))
             resolved_path = next((c for c in candidates if c.exists()), candidates[-1])
 
         if not resolved_path.exists():
