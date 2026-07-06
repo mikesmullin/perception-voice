@@ -12,7 +12,13 @@ When multiple applications need voice input, each must load its own copy of the 
 - Loads the Whisper model once into GPU VRAM
 - Continuously captures audio and transcribes speech
 - Stores utterances in a time-indexed memory buffer
-- Allows clients to retrieve transcriptions via Unix socket
+- Allows clients to retrieve transcriptions via Unix socket (poll with
+  `get`/`set`, or **subscribe to real-time push streams** — see below)
+- Optionally runs a second small model that decodes the in-progress
+  utterance every ~0.5s, pushing **partial hypotheses** before the
+  speaker even finishes the sentence
+- Publishes **~60 Hz audio feature frames** (rms + 4 spectral bands +
+  VAD) for driving visualizations, like a voice-reactive avatar
 
 ## Requirements
 
@@ -76,9 +82,43 @@ perception-voice serve [-v]
 ### Client Mode
 
 ```bash
-perception-voice client set <uid>   # Set read marker to now
-perception-voice client get <uid>   # Get transcriptions since marker
+perception-voice client set <uid>       # Set read marker to now
+perception-voice client get <uid>       # Get transcriptions since marker
+perception-voice client stream words    # Follow the words push stream (debug)
+perception-voice client stream levels   # Follow the levels push stream (debug)
 ```
+
+## Real-time push streams (`subscribe`)
+
+Polling with `get`/`set` adds latency; latency-sensitive consumers (e.g.
+the [Ada](https://github.com/mikesmullin/ada) voice assistant) can turn a
+connection into a push stream instead. Send one framed JSON request
+(4-byte big-endian length prefix + JSON, same framing as `get`/`set`):
+
+```json
+{"command": "subscribe", "channel": "words"}
+```
+
+After an `{"status":"ok"}` ack the server pushes to you forever (one
+channel per connection):
+
+- **`words`** — framed JSON events the moment they exist:
+  - `{"ev":"partial", "ts":…, "text":"turn on the des"}` — live hypothesis
+    from the secondary realtime model while the utterance is still being
+    spoken (see the `realtime:` config block)
+  - `{"ev":"utterance", "ts":…, "text":"Turn on the desk light.",
+    "t_start":…, "t_end":…}` — the finalized main-model transcription,
+    with unix-epoch start/end times of the speech itself
+- **`levels`** — raw binary feature frames at 62.5 Hz for visualization:
+  36 bytes little-endian — magic `'AVF1'` (u32), stream_id (u32, 0=mic),
+  rms (f32), 4 spectral band energies (f32, 0–300/300–1k/1k–3k/3k–8k Hz),
+  pitch_hint (f32, unused), flags (u32: bit0 VAD, bit1 utterance-start,
+  bit2 utterance-end)
+
+Fan-out happens on a dedicated thread with a bounded queue — a slow or
+stuck subscriber gets dropped, never stalls capture or other clients. The
+full wire spec lives in Ada's repo:
+[docs/PROTOCOL.md](https://github.com/mikesmullin/ada/blob/main/docs/PROTOCOL.md).
 
 ## Output Format (JSONL)
 
@@ -99,14 +139,29 @@ server:
   buffer_retention_minutes: 30
 
 transcription:
-  model: "large-v3"
+  model: "large-v3-turbo"
   device: "cuda"
   compute_type: "float16"
+
+realtime:
+  # Secondary small model decoding the in-progress utterance for the
+  # `subscribe words` partial-hypothesis events
+  enabled: true
+  model: "tiny.en"
+  interval: 0.5
 ```
+
+Config discovery order (first match wins): `-c/--config` flag,
+`$PERCEPTION_VOICE_CONFIG`, `config.yml` next to the package (a dev
+checkout), then `~/.config/perception-voice/config.yml` — symlink that to
+your checkout's config for `uv tool` installs. The current directory is
+deliberately **not** searched, so spawning the CLI from a directory with
+an unrelated `config.yml` is safe.
 
 ## Systemd Integration
 
-Create `/etc/systemd/user/perception-voice.service`:
+Copy the repo's `perception-voice.service` to
+`~/.config/systemd/user/perception-voice.service`, or create your own:
 
 ```ini
 [Unit]
@@ -115,7 +170,11 @@ After=sound.target
 
 [Service]
 Type=simple
-ExecStart=/path/to/perception-voice serve
+# Run from the checkout's venv: a tool install re-resolves dependencies
+# on every reinstall (a cu13 torch once slipped in and broke faster-
+# whisper's cu12 CUDA decode); the checkout venv is pinned and stable.
+WorkingDirectory=/path/to/perception-voice
+ExecStart=/path/to/perception-voice/.venv/bin/perception-voice serve
 Restart=on-failure
 RestartSec=5
 
