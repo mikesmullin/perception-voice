@@ -86,27 +86,35 @@ class Config:
         Raises:
             SystemExit: If config file not found
         """
-        # Find config file. When installed as a tool (uv tool install), the
-        # package parent is site-packages — not the project root — so search
-        # a fallback chain: explicit -c, $PERCEPTION_VOICE_CONFIG, package
-        # parent (dev checkout), then the well-known repo checkout.
+        # Find config file. Chain: explicit -c, $PERCEPTION_VOICE_CONFIG,
+        # package parent (relative — resolves to the project root in a dev
+        # checkout, exactly as before), then the XDG per-user location
+        # ~/.config/perception-voice/config.yml (which covers `uv tool`
+        # installs, where the package parent is site-packages — symlink it
+        # at the repo's config.yml or copy one there).
         #
         # Deliberately NO cwd fallback: callers spawn this CLI from
         # arbitrary directories (mari's REPL polls via `perception-voice
         # client` from /workspace/mari, which has its own unrelated
-        # config.yml), and picking up a foreign config.yml crashes parsing
-        # — that broke every mari voice trigger once.
+        # config.yml), and picking up a foreign config.yml crashes parsing.
+        # And no hardcoded absolute repo path: this must work on any
+        # machine, not one specific checkout location.
         import os
         if config_path is not None:
             resolved_path = config_path
         else:
             package_dir = Path(__file__).parent
+            xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
             candidates = []
             if os.environ.get("PERCEPTION_VOICE_CONFIG"):
                 candidates.append(Path(os.environ["PERCEPTION_VOICE_CONFIG"]))
             candidates.append(package_dir.parent / "config.yml")
-            candidates.append(Path("/workspace/perception-voice/config.yml"))
+            candidates.append(xdg / "perception-voice" / "config.yml")
             resolved_path = next((c for c in candidates if c.exists()), candidates[-1])
+
+        # Resolve symlinks so a relative server.socket_path anchors at the
+        # real config's directory (e.g. the repo root), not the symlink's.
+        resolved_path = resolved_path.resolve()
 
         if not resolved_path.exists():
             logger.error(f"Config file not found: {resolved_path}")
