@@ -38,10 +38,12 @@ audio:
 
 transcription:
   # STT backend:
-  #   "local" — faster-whisper on this machine (model/device/etc below)
-  #   "muse"  — Meta Muse Voice Transcribe hosted API (see `muse:` block
-  #             below). Loads NOTHING on the GPU — frees all VRAM. VAD
-  #             stays local, so only detected speech is sent to Meta.
+  #   "local"  — faster-whisper on this machine (model/device/etc below)
+  #   "muse"   — Meta Muse Voice Transcribe hosted API (see `muse:` block
+  #              below). Loads NOTHING on the GPU — frees all VRAM. VAD
+  #              stays local, so only detected speech is sent to Meta.
+  #   "audio8" — Audio8-ASR-0.1B, tiny local open-weight model (see
+  #              `audio8:` block; requires the [audio8] extra).
   backend: "local"
 
   # Model for transcription (downloaded automatically on first startup)
@@ -106,3 +108,13 @@ muse:
 
   # Seconds to wait on API calls / final transcript before falling back
   request_timeout: 30.0
+
+audio8:
+  # Audio8-ASR-0.1B (used when transcription.backend: "audio8").
+  # Requires `pip install transformers` (or `uv pip install -e '.[audio8]'`).
+  # Weights download from Hugging Face on first startup. CC-BY-NC-4.0.
+  model: "Audio8/Audio8-ASR-0.1B"
+  device: "cuda"        # "cuda" or "cpu"
+  dtype: "bfloat16"     # "bfloat16" (GPU) or "float32" (CPU)
+  max_new_tokens: 128
+  max_clip_seconds: 30  # model cap; longer utterances are chunked

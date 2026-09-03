@@ -35,6 +35,16 @@ Set `transcription.backend` in `config.yml`:
 |---|---|---|
 | `local` (default) | faster-whisper running on this machine | ~2-3 GB |
 | `muse` | [Meta Muse Voice Transcribe](https://ai.developer.meta.com/docs/speech-to-text) hosted API | **zero** |
+| `audio8` | [Audio8-ASR-0.1B](https://huggingface.co/Audio8/Audio8-ASR-0.1B), tiny local open-weight model | ~1.2 GB |
+
+`audio8` is the offline middle ground: small enough to share the GPU
+with a large LLM (~1.15 GB measured footprint incl. CUDA context,
+~80 ms warm inference per utterance on an RTX 5090), free, and private —
+at the cost of fewer languages (en, zh, yue, fr, de, ja, ko) and a
+CC-BY-NC-4.0 license (personal use only). Install its extra deps with
+`uv pip install -e '.[audio8]'`; weights download on first startup. It
+has no partials of its own — enable the `realtime:` block for
+`subscribe words` partials, or use `muse` for API-native ones.
 
 The `muse` backend loads no model at all — useful when you need the VRAM
 for something else (e.g. a local LLM). Everything else stays identical:

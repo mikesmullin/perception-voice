@@ -41,10 +41,23 @@ class TranscriptionConfig:
     compute_type: str
     language: str
     beam_size: int
-    # "local" = faster-whisper on this machine (GPU/CPU per `device`);
-    # "muse"  = Meta Muse Voice Transcribe hosted API (no local model
-    #           loaded at all — frees the GPU entirely; see `muse:` block)
+    # "local"  = faster-whisper on this machine (GPU/CPU per `device`);
+    # "muse"   = Meta Muse Voice Transcribe hosted API (no local model
+    #            loaded at all — frees the GPU entirely; see `muse:` block)
+    # "audio8" = Audio8-ASR-0.1B, tiny local open-weight model (~1-2 GB
+    #            VRAM — small enough to share the GPU with a large LLM;
+    #            see `audio8:` block). CC-BY-NC license, personal use.
     backend: str = "local"
+
+
+@dataclass
+class Audio8Config:
+    """Audio8-ASR-0.1B backend settings (backend: "audio8")"""
+    model: str = "Audio8/Audio8-ASR-0.1B"
+    device: str = "cuda"           # "cuda" or "cpu"
+    dtype: str = "bfloat16"        # "bfloat16" (GPU) or "float32" (CPU)
+    max_new_tokens: int = 128
+    max_clip_seconds: int = 30     # model cap; longer clips are chunked
 
 
 @dataclass
@@ -95,6 +108,7 @@ class Config:
     config_path: Path
     realtime: RealtimeConfig = field(default_factory=RealtimeConfig)
     muse: MuseConfig = field(default_factory=MuseConfig)
+    audio8: Audio8Config = field(default_factory=Audio8Config)
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "Config":
@@ -154,10 +168,10 @@ class Config:
         logger.info(f"Loaded config from {resolved_path}")
         
         transcription = TranscriptionConfig(**config_data.get("transcription", {}))
-        if transcription.backend not in ("local", "muse"):
+        if transcription.backend not in ("local", "muse", "audio8"):
             logger.error(
                 f"Invalid transcription.backend: {transcription.backend!r} "
-                "(expected 'local' or 'muse')"
+                "(expected 'local', 'muse', or 'audio8')"
             )
             sys.exit(1)
 
@@ -168,6 +182,7 @@ class Config:
             vad=VADConfig(**config_data.get("vad", {})),
             realtime=RealtimeConfig(**config_data.get("realtime", {})),
             muse=MuseConfig(**config_data.get("muse", {})),
+            audio8=Audio8Config(**config_data.get("audio8", {})),
             config_path=resolved_path.parent,
         )
     

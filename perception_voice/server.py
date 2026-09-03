@@ -89,6 +89,7 @@ class Server:
             stream_hub=self._hub,
             realtime_config=self.config.realtime,
             muse_config=self.config.muse,
+            audio8_config=self.config.audio8,
         )
         
         # Start transcriber

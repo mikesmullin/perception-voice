@@ -46,6 +46,7 @@ _preload_cuda12_libs()
 from faster_whisper import WhisperModel  # noqa: E402  (after CUDA preload)
 
 from perception_voice.config import (
+    Audio8Config,
     AudioConfig,
     MuseConfig,
     RealtimeConfig,
@@ -78,6 +79,7 @@ class Transcriber:
         stream_hub=None,
         realtime_config: Optional[RealtimeConfig] = None,
         muse_config: Optional[MuseConfig] = None,
+        audio8_config: Optional[Audio8Config] = None,
     ):
         """
         Initialize transcriber
@@ -91,6 +93,7 @@ class Transcriber:
             stream_hub: Optional StreamHub for level/word push streams
             realtime_config: Optional secondary-model partial-decode settings
             muse_config: Meta Muse Voice settings (used when backend == "muse")
+            audio8_config: Audio8-ASR settings (used when backend == "audio8")
         """
         self.audio_config = audio_config
         self.transcription_config = transcription_config
@@ -139,9 +142,13 @@ class Transcriber:
         self._muse_file = None
         self._muse_key: Optional[str] = None
         self._muse_session = None  # in-flight MuseStreamSession, if any
+        self._audio8 = None
         self.muse_config = muse_config or MuseConfig()
 
-        if transcription_config.backend == "muse":
+        if transcription_config.backend == "audio8":
+            from perception_voice.audio8 import Audio8Engine
+            self._audio8 = Audio8Engine(audio8_config or Audio8Config())
+        elif transcription_config.backend == "muse":
             from perception_voice import muse
             self._muse_mod = muse
             try:
@@ -167,7 +174,8 @@ class Transcriber:
         # periodically so `subscribe words` subscribers get partial
         # hypotheses before the VAD tail closes (Ada latency path).
         # With the muse backend, partials come from the realtime WebSocket
-        # instead — no local model needed.
+        # instead — no local model needed. The audio8 backend has no
+        # partials of its own, so the local realtime model still applies.
         self._partial_decoder: Optional[_PartialDecoder] = None
         if stream_hub and realtime_config and realtime_config.enabled:
             if transcription_config.backend == "muse":
@@ -381,9 +389,13 @@ class Transcriber:
     def _transcribe(self, audio: np.ndarray, utterance_start: datetime,
                     utterance_end: Optional[datetime] = None,
                     muse_session=None) -> None:
-        """Transcribe audio (local Whisper model or Muse Voice API)"""
+        """Transcribe audio (local Whisper, Audio8, or Muse Voice API)"""
         try:
-            if self._muse_file:
+            if self._audio8:
+                full_text = (self._audio8.transcribe(
+                    audio, self.audio_config.sample_rate
+                ) or "").strip()
+            elif self._muse_file:
                 # Streaming session already has the audio; ask it to finalize.
                 # On any stream failure, POST the buffered audio instead.
                 text = None

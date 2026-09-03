@@ -29,6 +29,14 @@ dependencies = [
     "websockets>=12.0",
 ]
 
+[project.optional-dependencies]
+# Audio8-ASR-0.1B local backend (transcription.backend: "audio8");
+# librosa/soundfile are imported by the model's trust_remote_code files.
+# transformers must stay <5: the model's remote code produces garbage
+# under 5.x (untied lm_head + changed generation internals) — verified
+# broken on 5.16.1, working on 4.57.6.
+audio8 = ["transformers>=4.44,<5", "librosa>=0.10", "soundfile>=0.12"]
+
 [project.scripts]
 perception-voice = "perception_voice.cli:main"
 
