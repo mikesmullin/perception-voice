@@ -23,8 +23,37 @@ When multiple applications need voice input, each must load its own copy of the 
 ## Requirements
 
 - Python 3.11+
-- NVIDIA GPU with CUDA support (recommended)
+- NVIDIA GPU with CUDA support (recommended for the `local` backend;
+  not needed at all with the `muse` backend)
 - Microphone
+
+## STT Backends
+
+Set `transcription.backend` in `config.yml`:
+
+| Backend | What it is | GPU VRAM |
+|---|---|---|
+| `local` (default) | faster-whisper running on this machine | ~2-3 GB |
+| `muse` | [Meta Muse Voice Transcribe](https://ai.developer.meta.com/docs/speech-to-text) hosted API | **zero** |
+
+The `muse` backend loads no model at all — useful when you need the VRAM
+for something else (e.g. a local LLM). Everything else stays identical:
+VAD gating, the utterance buffer, `get`/`set`, and both push streams.
+Because speech detection stays local, only VAD-detected utterances are
+ever sent to Meta (~$0.003 per spoken minute — $3.00/1,000 audio min),
+never the idle microphone.
+
+With `muse.streaming: true` (default), each utterance opens one realtime
+WebSocket: audio is forwarded while you're still speaking, live partial
+hypotheses feed `subscribe words` (replacing the local `tiny.en` realtime
+model), and the final transcript lands ~0.16s after end of speech. If a
+stream fails mid-utterance, the locally buffered audio is POSTed to the
+file endpoint automatically — no audio is lost.
+
+Auth: set `muse.api_key` in `config.yml`, or put `META_API_KEY=...` in
+an uncommitted `.env` next to `config.yml` (loaded automatically), or
+export `META_API_KEY` (create a key at <https://ai.developer.meta.com/>
+→ API keys; they look like `LLM|...`).
 
 ## Installation
 

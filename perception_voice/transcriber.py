@@ -45,7 +45,13 @@ _preload_cuda12_libs()
 
 from faster_whisper import WhisperModel  # noqa: E402  (after CUDA preload)
 
-from perception_voice.config import AudioConfig, RealtimeConfig, TranscriptionConfig, VADConfig
+from perception_voice.config import (
+    AudioConfig,
+    MuseConfig,
+    RealtimeConfig,
+    TranscriptionConfig,
+    VADConfig,
+)
 from perception_voice.vad import VoiceActivityDetector
 
 logger = logging.getLogger(__name__)
@@ -71,6 +77,7 @@ class Transcriber:
         verbose: bool = False,
         stream_hub=None,
         realtime_config: Optional[RealtimeConfig] = None,
+        muse_config: Optional[MuseConfig] = None,
     ):
         """
         Initialize transcriber
@@ -83,6 +90,7 @@ class Transcriber:
             verbose: Enable verbose logging
             stream_hub: Optional StreamHub for level/word push streams
             realtime_config: Optional secondary-model partial-decode settings
+            muse_config: Meta Muse Voice settings (used when backend == "muse")
         """
         self.audio_config = audio_config
         self.transcription_config = transcription_config
@@ -124,23 +132,53 @@ class Transcriber:
             sample_rate=audio_config.sample_rate,
         )
         
-        # Load Whisper model
-        logger.info(f"Loading Whisper model: {transcription_config.model}")
-        self._model = WhisperModel(
-            transcription_config.model,
-            device=transcription_config.device,
-            compute_type=transcription_config.compute_type,
-        )
-        logger.info(f"Whisper model loaded: {transcription_config.model}")
+        # STT engine: local faster-whisper model, or Meta's hosted Muse
+        # Voice Transcribe API (backend "muse" loads nothing on the GPU —
+        # VAD gating stays local, so only detected speech is sent out).
+        self._model: Optional[WhisperModel] = None
+        self._muse_file = None
+        self._muse_key: Optional[str] = None
+        self._muse_session = None  # in-flight MuseStreamSession, if any
+        self.muse_config = muse_config or MuseConfig()
+
+        if transcription_config.backend == "muse":
+            from perception_voice import muse
+            self._muse_mod = muse
+            try:
+                self._muse_key = muse.resolve_api_key(self.muse_config)
+            except muse.MuseAuthError as e:
+                logger.error(str(e))
+                raise SystemExit(1)
+            self._muse_file = muse.MuseFileClient(self.muse_config, self._muse_key)
+            logger.info(
+                f"Using Meta Muse Voice backend: {self.muse_config.model} "
+                f"(streaming={self.muse_config.streaming}; no local model loaded)"
+            )
+        else:
+            logger.info(f"Loading Whisper model: {transcription_config.model}")
+            self._model = WhisperModel(
+                transcription_config.model,
+                device=transcription_config.device,
+                compute_type=transcription_config.compute_type,
+            )
+            logger.info(f"Whisper model loaded: {transcription_config.model}")
 
         # Secondary realtime model: decodes the in-progress utterance buffer
         # periodically so `subscribe words` subscribers get partial
         # hypotheses before the VAD tail closes (Ada latency path).
+        # With the muse backend, partials come from the realtime WebSocket
+        # instead — no local model needed.
         self._partial_decoder: Optional[_PartialDecoder] = None
         if stream_hub and realtime_config and realtime_config.enabled:
-            self._partial_decoder = _PartialDecoder(
-                self, realtime_config, transcription_config, stream_hub
-            )
+            if transcription_config.backend == "muse":
+                logger.info(
+                    "realtime.enabled: partial hypotheses come from the Muse "
+                    "stream (local realtime model not loaded)"
+                )
+            else:
+                self._partial_decoder = _PartialDecoder(
+                    self, realtime_config, transcription_config, stream_hub
+                )
     
     def start(self) -> None:
         """Start the transcriber"""
@@ -232,10 +270,14 @@ class Transcriber:
                     self._start_recording()
 
                 self._frames.append(audio_chunk)
+                if self._muse_session:
+                    self._muse_session.feed(audio_chunk)
                 self._silence_count = 0
 
             elif self.is_recording:
                 self._frames.append(audio_chunk)
+                if self._muse_session:
+                    self._muse_session.feed(audio_chunk)
                 self._silence_count += 1
 
                 if self._silence_count >= self._max_silence_chunks:
@@ -273,9 +315,30 @@ class Transcriber:
         # Include pre-recording buffer
         self._frames = list(self._audio_buffer)
         self._silence_count = 0
-        
+
+        # Muse streaming: open a per-utterance realtime session and replay
+        # the pre-recording buffer into it. feed() only enqueues, so this
+        # stays safe on the audio callback thread; if the socket later
+        # fails, _transcribe falls back to POSTing the buffered audio.
+        if self._muse_file and self.muse_config.streaming:
+            self._muse_session = self._muse_mod.MuseStreamSession(
+                self.muse_config,
+                self._muse_key,
+                sample_rate=self.audio_config.sample_rate,
+                on_partial=self._on_muse_partial,
+            )
+            for chunk in self._frames:
+                self._muse_session.feed(chunk)
+
         if self.verbose:
             logger.info("Recording started")
+
+    def _on_muse_partial(self, text: str) -> None:
+        """Publish a live hypothesis from the Muse stream to `subscribe words`"""
+        if self._hub:
+            self._hub.publish_words(
+                {"ev": "partial", "ts": time.time(), "text": text}
+            )
     
     def _stop_recording(self) -> None:
         """Stop recording (called when silence detected)"""
@@ -284,21 +347,26 @@ class Transcriber:
         
         self.is_recording = False
         recording_duration = time.time() - self._recording_start_time
-        
+
+        # Detach any in-flight Muse stream session from the callback path
+        muse_session, self._muse_session = self._muse_session, None
+
         # Check minimum duration
         if recording_duration < self.audio_config.min_utterance_duration:
             if self.verbose:
                 logger.debug(f"Recording too short ({recording_duration:.2f}s), discarding")
             self._frames = []
+            if muse_session:
+                muse_session.abort()
             return
-        
+
         # Concatenate frames and transcribe
         audio_data = np.concatenate(self._frames)
         self._frames = []
-        
+
         if self.verbose:
             logger.info(f"Recording stopped ({recording_duration:.2f}s), transcribing...")
-        
+
         # Capture utterance start/end times as datetimes
         utterance_start = datetime.fromtimestamp(self._recording_start_time, tz=timezone.utc).astimezone()
         utterance_end = datetime.now(tz=timezone.utc).astimezone()
@@ -306,26 +374,41 @@ class Transcriber:
         # Transcribe in separate thread
         threading.Thread(
             target=self._transcribe,
-            args=(audio_data, utterance_start, utterance_end),
+            args=(audio_data, utterance_start, utterance_end, muse_session),
             daemon=True,
         ).start()
-    
+
     def _transcribe(self, audio: np.ndarray, utterance_start: datetime,
-                    utterance_end: Optional[datetime] = None) -> None:
-        """Transcribe audio with Whisper model"""
+                    utterance_end: Optional[datetime] = None,
+                    muse_session=None) -> None:
+        """Transcribe audio (local Whisper model or Muse Voice API)"""
         try:
-            segments, info = self._model.transcribe(
-                audio,
-                language=self.transcription_config.language,
-                beam_size=self.transcription_config.beam_size,
-            )
-            
-            text_parts = []
-            for segment in segments:
-                text_parts.append(segment.text.strip())
-            
-            full_text = " ".join(text_parts).strip()
-            
+            if self._muse_file:
+                # Streaming session already has the audio; ask it to finalize.
+                # On any stream failure, POST the buffered audio instead.
+                text = None
+                if muse_session:
+                    text = muse_session.finish(
+                        timeout=self.muse_config.request_timeout
+                    )
+                if text is None:
+                    text = self._muse_file.transcribe(
+                        audio, self.audio_config.sample_rate
+                    )
+                full_text = (text or "").strip()
+            else:
+                segments, info = self._model.transcribe(
+                    audio,
+                    language=self.transcription_config.language,
+                    beam_size=self.transcription_config.beam_size,
+                )
+
+                text_parts = []
+                for segment in segments:
+                    text_parts.append(segment.text.strip())
+
+                full_text = " ".join(text_parts).strip()
+
             if not full_text:
                 return
             

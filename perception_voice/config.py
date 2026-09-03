@@ -3,6 +3,7 @@ Configuration management for perception-voice
 """
 
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,29 @@ class TranscriptionConfig:
     compute_type: str
     language: str
     beam_size: int
+    # "local" = faster-whisper on this machine (GPU/CPU per `device`);
+    # "muse"  = Meta Muse Voice Transcribe hosted API (no local model
+    #           loaded at all — frees the GPU entirely; see `muse:` block)
+    backend: str = "local"
+
+
+@dataclass
+class MuseConfig:
+    """Meta Muse Voice Transcribe backend settings (backend: "muse")"""
+    # API key; null falls back to $META_API_KEY. Keys look like "LLM|..."
+    # and come from https://ai.developer.meta.com/ -> API keys.
+    api_key: Optional[str] = None
+    model: str = "muse-voice-transcribe-1.0"
+    # True: one realtime WebSocket per utterance — audio streams while you
+    # speak, partial hypotheses feed `subscribe words`, final lands fast.
+    # False: buffered WAV POSTed after each utterance (no partials).
+    # Either way the stream-failure fallback is the buffered POST.
+    streaming: bool = True
+    realtime_url: str = "wss://api.meta.ai/v1/asr/realtime"
+    transcribe_url: str = "https://api.meta.ai/v1/asr/transcribe"
+    language_bias: List[str] = field(default_factory=list)
+    keywords: List[str] = field(default_factory=list)
+    request_timeout: float = 30.0
 
 
 @dataclass
@@ -70,6 +94,7 @@ class Config:
     vad: VADConfig
     config_path: Path
     realtime: RealtimeConfig = field(default_factory=RealtimeConfig)
+    muse: MuseConfig = field(default_factory=MuseConfig)
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "Config":
@@ -116,6 +141,10 @@ class Config:
         # real config's directory (e.g. the repo root), not the symlink's.
         resolved_path = resolved_path.resolve()
 
+        # Secrets live in an uncommitted .env beside the config file
+        # (e.g. META_API_KEY), never in config.yml itself.
+        _load_dotenv(resolved_path.parent / ".env")
+
         if not resolved_path.exists():
             logger.error(f"Config file not found: {resolved_path}")
             logger.error("Please copy config.example.yml to config.yml and customize it.")
@@ -124,12 +153,21 @@ class Config:
         config_data = _load_yaml(resolved_path)
         logger.info(f"Loaded config from {resolved_path}")
         
+        transcription = TranscriptionConfig(**config_data.get("transcription", {}))
+        if transcription.backend not in ("local", "muse"):
+            logger.error(
+                f"Invalid transcription.backend: {transcription.backend!r} "
+                "(expected 'local' or 'muse')"
+            )
+            sys.exit(1)
+
         return cls(
             server=ServerConfig(**config_data.get("server", {})),
             audio=AudioConfig(**config_data.get("audio", {})),
-            transcription=TranscriptionConfig(**config_data.get("transcription", {})),
+            transcription=transcription,
             vad=VADConfig(**config_data.get("vad", {})),
             realtime=RealtimeConfig(**config_data.get("realtime", {})),
+            muse=MuseConfig(**config_data.get("muse", {})),
             config_path=resolved_path.parent,
         )
     
@@ -139,6 +177,25 @@ class Config:
         if socket_path.is_absolute():
             return socket_path
         return self.config_path / socket_path
+
+
+def _load_dotenv(path: Path) -> None:
+    """Load KEY=VALUE lines into os.environ (existing vars win)."""
+    if not path.exists():
+        return
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+        logger.info(f"Loaded environment from {path}")
+    except Exception as e:
+        logger.warning(f"Could not read {path}: {e}")
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:

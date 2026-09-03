@@ -37,6 +37,13 @@ audio:
   pre_recording_buffer_duration: 1.0
 
 transcription:
+  # STT backend:
+  #   "local" — faster-whisper on this machine (model/device/etc below)
+  #   "muse"  — Meta Muse Voice Transcribe hosted API (see `muse:` block
+  #             below). Loads NOTHING on the GPU — frees all VRAM. VAD
+  #             stays local, so only detected speech is sent to Meta.
+  backend: "local"
+
   # Model for transcription (downloaded automatically on first startup)
   # Options: tiny, tiny.en, base, base.en, small, small.en, medium, medium.en, large-v2, large-v3
   model: "large-v3"
@@ -73,3 +80,29 @@ realtime:
   compute_type: "float16"
   interval: 0.5
   beam_size: 1
+
+muse:
+  # Meta Muse Voice Transcribe (used when transcription.backend: "muse").
+  # Docs: https://ai.developer.meta.com/docs/speech-to-text
+  # Pricing: $3.00 / 1,000 audio min; only VAD-detected speech is sent.
+
+  # API key ("LLM|..."). null = read META_API_KEY from the environment;
+  # an uncommitted .env file next to config.yml is loaded automatically.
+  api_key: null
+
+  model: "muse-voice-transcribe-1.0"
+
+  # true:  one realtime WebSocket per utterance — live partials feed
+  #        `subscribe words`, final lands ~0.16s after end of speech.
+  # false: buffered WAV POSTed after each utterance (no partials).
+  streaming: true
+
+  realtime_url: "wss://api.meta.ai/v1/asr/realtime"
+  transcribe_url: "https://api.meta.ai/v1/asr/transcribe"
+
+  # Optional recognition biasing
+  language_bias: []
+  keywords: []
+
+  # Seconds to wait on API calls / final transcript before falling back
+  request_timeout: 30.0

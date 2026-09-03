@@ -88,6 +88,7 @@ class Server:
             verbose=self.verbose,
             stream_hub=self._hub,
             realtime_config=self.config.realtime,
+            muse_config=self.config.muse,
         )
         
         # Start transcriber

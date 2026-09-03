@@ -53,3 +53,6 @@ perception.sock
 
 # Models (downloaded on first run by faster_whisper)
 # These are stored in ~/.cache/huggingface/hub/
+
+# Secrets (META_API_KEY etc.)
+.env
