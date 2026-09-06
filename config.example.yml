@@ -16,6 +16,15 @@ server:
     - "thanks"
     - "you"
 
+  # Optional append-only log of everything overheard, one
+  # timestamp-prefixed line per utterance (`Sun, Sep 6 @ 4:09p | ...`).
+  # null or "" = disabled (in-memory buffer only). When set, every
+  # buffered utterance is appended to this file, so the full history
+  # survives beyond buffer_retention_minutes and restarts.
+  # Relative paths anchor at this config file's directory.
+  # Example: "./tmp/convos.md" or "/var/log/perception-voice.log"
+  transcript_log_path: null
+
 audio:
   # Sample rate for audio capture (Hz)
   sample_rate: 16000

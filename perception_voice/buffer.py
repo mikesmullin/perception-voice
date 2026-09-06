@@ -11,7 +11,8 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,15 @@ class Utterance:
         """Convert to JSONL format with ISO 8601 timestamp"""
         ts_str = self.timestamp.isoformat(timespec='milliseconds')
         return json.dumps({"ts": ts_str, "text": self.text})
+
+    def to_log_line(self) -> str:
+        """Human-readable log line prefixed with a local timestamp,
+        e.g. `Sun, Sep 6 @ 4:09p | hello world`"""
+        ts = self.timestamp
+        hour12 = ts.hour % 12 or 12
+        ampm = "a" if ts.hour < 12 else "p"
+        ts_str = f"{ts.strftime('%a, %b')} {ts.day} @ {hour12}:{ts.strftime('%M')}{ampm}"
+        return f"{ts_str} | {self.text}"
     
     @classmethod
     def from_text(cls, text: str, timestamp: Optional[datetime] = None) -> "Utterance":
@@ -51,18 +61,32 @@ class TranscriptionBuffer:
     - Discard phrases filtering
     """
     
-    def __init__(self, retention_minutes: int = 30, discard_phrases: List[str] = None):
+    def __init__(
+        self,
+        retention_minutes: int = 30,
+        discard_phrases: List[str] = None,
+        log_path: Optional[Union[str, Path]] = None,
+    ):
         """
         Initialize buffer
-        
+
         Args:
             retention_minutes: How long to keep utterances in memory
             discard_phrases: List of phrases to discard (normalized matching)
+            log_path: Optional path to a log file. When set (non-empty),
+                every added utterance is appended as a timestamp-prefixed
+                line (`Sun, Sep 6 @ 4:09p | text`), so the full history
+                survives beyond the in-memory TTL. Parent dirs are created
+                on first write; the file is opened in append mode so
+                history survives restarts.
         """
         self.retention_minutes = retention_minutes
         self._utterances: List[Utterance] = []
         self._read_markers: Dict[str, datetime] = {}
         self._lock = threading.RLock()
+        self._log_path: Optional[Path] = None
+        if log_path is not None and str(log_path).strip():
+            self._log_path = Path(str(log_path).strip()).expanduser()
         
         # Pre-normalize discard phrases for fast matching
         self._discard_phrases: set = set()
@@ -99,13 +123,31 @@ class TranscriptionBuffer:
             return False
         
         utterance = Utterance.from_text(text, timestamp)
-        
+
         with self._lock:
             self._utterances.append(utterance)
             self._cleanup_old_entries()
-        
+            self._append_to_log(utterance)
+
         logger.debug(f"Added utterance: {len(text)} chars at {utterance.timestamp}")
         return True
+
+    def _append_to_log(self, utterance: Utterance) -> None:
+        """Append one timestamp-prefixed line to the log file, if enabled.
+
+        Called with the buffer lock held so log order matches buffer order.
+        Failures are logged as warnings and never break buffering.
+        """
+        if self._log_path is None:
+            return
+        try:
+            parent = self._log_path.parent
+            if str(parent) and not parent.exists():
+                parent.mkdir(parents=True, exist_ok=True)
+            with open(self._log_path, "a", encoding="utf-8") as f:
+                f.write(utterance.to_log_line() + "\n")
+        except Exception as e:
+            logger.warning(f"Could not append to transcript log {self._log_path}: {e}")
     
     def set_marker(self, uid: str) -> None:
         """
@@ -187,4 +229,5 @@ class TranscriptionBuffer:
                 "utterance_count": len(self._utterances),
                 "marker_count": len(self._read_markers),
                 "retention_minutes": self.retention_minutes,
+                "log_path": str(self._log_path) if self._log_path else None,
             }

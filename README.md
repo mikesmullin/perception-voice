@@ -176,6 +176,7 @@ See `config.example.yml` for all options. Key settings:
 server:
   socket_path: "perception.sock"
   buffer_retention_minutes: 30
+  transcript_log_path: null  # set to a path to keep an append-only timestamped log
 
 transcription:
   model: "large-v3-turbo"

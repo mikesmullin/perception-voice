@@ -67,13 +67,16 @@ class Server:
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
         
-        # Initialize buffer
+        # Initialize buffer (+ optional append-only JSONL transcript log)
+        log_path = self.config.get_transcript_log_path()
         self._buffer = TranscriptionBuffer(
             retention_minutes=self.config.server.buffer_retention_minutes,
             discard_phrases=self.config.server.discard_phrases,
+            log_path=log_path,
         )
         logger.info(
-            f"Buffer initialized (retention: {self.config.server.buffer_retention_minutes} min)"
+            f"Buffer initialized (retention: {self.config.server.buffer_retention_minutes} min"
+            f"{f', transcript log: {log_path}' if log_path else ''})"
         )
         
         # Initialize push-stream hub (levels + words subscriptions)

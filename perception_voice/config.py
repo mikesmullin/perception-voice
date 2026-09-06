@@ -20,6 +20,12 @@ class ServerConfig:
     socket_path: str
     buffer_retention_minutes: int
     discard_phrases: List[str] = field(default_factory=list)
+    # Optional path to a transcript log file. Null or empty = disabled
+    # (in-memory buffer only). When set, every buffered utterance is
+    # appended to the file as a timestamp-prefixed line
+    # (`Sun, Sep 6 @ 4:09p | text`), surviving restarts while the
+    # in-memory buffer keeps its TTL.
+    transcript_log_path: Optional[str] = None
 
 
 @dataclass
@@ -192,6 +198,24 @@ class Config:
         if socket_path.is_absolute():
             return socket_path
         return self.config_path / socket_path
+
+    def get_transcript_log_path(self) -> Optional[Path]:
+        """Get the absolute path to the transcript log file, if enabled.
+
+        Returns None when `server.transcript_log_path` is null or empty
+        (logging disabled). Relative paths anchor at the config file's
+        directory, same convention as `get_socket_path`.
+        """
+        raw = self.server.transcript_log_path
+        if raw is None:
+            return None
+        raw = os.path.expandvars(str(raw).strip())
+        if not raw:
+            return None
+        log_path = Path(raw).expanduser()
+        if log_path.is_absolute():
+            return log_path
+        return self.config_path / log_path
 
 
 def _load_dotenv(path: Path) -> None:
