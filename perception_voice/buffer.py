@@ -27,6 +27,9 @@ class Utterance:
     """A single transcribed utterance with timestamp"""
     timestamp: datetime
     text: str
+    # P95 windowed-RMS level in dBFS, when known (helps tell speakers
+    # apart: nearer/louder voices score higher). None = not measured.
+    level_db: Optional[float] = None
     
     def to_jsonl(self) -> str:
         """Convert to JSONL format with ISO 8601 timestamp"""
@@ -35,12 +38,14 @@ class Utterance:
 
     def to_log_line(self) -> str:
         """Human-readable log line prefixed with a local timestamp,
-        e.g. `Sun, Sep 6 @ 4:09p | hello world`"""
+        e.g. `Sun, Sep 6 @ 4:09p | P95 -23dB | hello world`"""
         ts = self.timestamp
         hour12 = ts.hour % 12 or 12
         ampm = "a" if ts.hour < 12 else "p"
         ts_str = f"{ts.strftime('%a, %b')} {ts.day} @ {hour12}:{ts.strftime('%M')}{ampm}"
-        return f"{ts_str} | {self.text}"
+        if self.level_db is None:
+            return f"{ts_str} | {self.text}"
+        return f"{ts_str} | P95 {self.level_db:.0f}dB | {self.text}"
     
     @classmethod
     def from_text(cls, text: str, timestamp: Optional[datetime] = None) -> "Utterance":
@@ -101,28 +106,35 @@ class TranscriptionBuffer:
         normalized = normalize_phrase(text)
         return normalized in self._discard_phrases
     
-    def add(self, text: str, timestamp: Optional[datetime] = None) -> bool:
+    def add(
+        self,
+        text: str,
+        timestamp: Optional[datetime] = None,
+        level_db: Optional[float] = None,
+    ) -> bool:
         """
         Add a new transcribed utterance
-        
+
         Args:
             text: The transcribed text
             timestamp: When the utterance started (default: now)
-        
+            level_db: P95 windowed-RMS level in dBFS, if measured
+
         Returns:
             True if added, False if discarded
         """
         if not text or not text.strip():
             return False
-        
+
         text = text.strip()
-        
+
         # Check discard phrases
         if self._should_discard(text):
             logger.debug(f"Discarded phrase: {text!r}")
             return False
-        
+
         utterance = Utterance.from_text(text, timestamp)
+        utterance.level_db = level_db
 
         with self._lock:
             self._utterances.append(utterance)

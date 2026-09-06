@@ -17,7 +17,8 @@ server:
     - "you"
 
   # Optional append-only log of everything overheard, one
-  # timestamp-prefixed line per utterance (`Sun, Sep 6 @ 4:09p | ...`).
+  # timestamp-prefixed line per utterance, with a P95 loudness tag to
+  # help tell speakers apart (`Sun, Sep 6 @ 4:09p | P95 -23dB | ...`).
   # null or "" = disabled (in-memory buffer only). When set, every
   # buffered utterance is appended to this file, so the full history
   # survives beyond buffer_retention_minutes and restarts.

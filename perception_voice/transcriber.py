@@ -57,6 +57,38 @@ from perception_voice.vad import VoiceActivityDetector
 
 logger = logging.getLogger(__name__)
 
+#: Floor for level measurements (dBFS) — digital silence / all-zero audio.
+LEVEL_FLOOR_DB = -96.0
+
+
+def utterance_level_db(audio: "np.ndarray", sample_rate: int = 16000) -> Optional[float]:
+    """P95 windowed-RMS level of an utterance in dBFS (0 = full scale).
+
+    RMS is computed per ~32 ms window and the 95th percentile is taken so
+    a single clipped sample can't dominate the reading. Intended as a
+    rough speaker cue (nearer/louder voices score higher), not a
+    calibrated measurement. Returns None when it can't be computed.
+    """
+    try:
+        import numpy as _np
+        if audio is None:
+            return None
+        x = _np.asarray(audio, dtype=_np.float64).ravel()
+        if x.size == 0:
+            return None
+        win = max(1, sample_rate // 32)
+        n = (x.size // win) * win
+        if n == 0:
+            rms = float(_np.sqrt(_np.mean(x ** 2)))
+        else:
+            per_win = _np.sqrt(_np.mean(x[:n].reshape(-1, win) ** 2, axis=1))
+            rms = float(_np.percentile(per_win, 95))
+        if not _np.isfinite(rms) or rms <= 0:
+            return LEVEL_FLOOR_DB
+        return max(LEVEL_FLOOR_DB, 20.0 * float(_np.log10(rms)))
+    except Exception:
+        return None
+
 
 class Transcriber:
     """
@@ -423,16 +455,20 @@ class Transcriber:
 
             if not full_text:
                 return
-            
+
             self.transcription_count += 1
             word_count = len(full_text.split())
-            
+            level_db = utterance_level_db(audio, self.audio_config.sample_rate)
+
             if self.verbose:
-                logger.info(f"Transcribed: {word_count} words")
-            
+                if level_db is None:
+                    logger.info(f"Transcribed: {word_count} words")
+                else:
+                    logger.info(f"Transcribed: {word_count} words (P95 {level_db:.0f}dB)")
+
             if self.on_transcription:
                 try:
-                    self.on_transcription(full_text, utterance_start, utterance_end)
+                    self.on_transcription(full_text, utterance_start, utterance_end, level_db)
                 except Exception as e:
                     logger.error(f"Error in transcription callback: {e}")
         
