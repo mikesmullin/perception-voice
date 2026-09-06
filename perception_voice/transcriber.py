@@ -10,6 +10,7 @@ import ctypes
 import glob
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -59,6 +60,21 @@ logger = logging.getLogger(__name__)
 
 #: Floor for level measurements (dBFS) — digital silence / all-zero audio.
 LEVEL_FLOOR_DB = -96.0
+
+#: Han (CJK) ideograph ranges — Whisper occasionally mistranslates noise
+#: or non-English audio into Chinese; such output is never legitimate
+#: here (configured language is English) and must not be emitted anywhere.
+_CJK_RE = re.compile(
+    "[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    "\U00020000-\U0002a6df\U0002a600-\U0002b73f"
+    "\U0002b740-\U0002b81f\U0002b820-\U0002ceaf"
+    "\U0002ceb0-\U0002ebef\U00030000-\U000323af]"
+)
+
+
+def contains_cjk(text: str) -> bool:
+    """True if text contains any Han (CJK) ideograph."""
+    return bool(text and _CJK_RE.search(text))
 
 
 def utterance_level_db(audio: "np.ndarray", sample_rate: int = 16000) -> Optional[float]:
@@ -375,6 +391,9 @@ class Transcriber:
 
     def _on_muse_partial(self, text: str) -> None:
         """Publish a live hypothesis from the Muse stream to `subscribe words`"""
+        if text and contains_cjk(text):
+            logger.debug(f"Dropped CJK partial: {text!r}")
+            return
         if self._hub:
             self._hub.publish_words(
                 {"ev": "partial", "ts": time.time(), "text": text}
@@ -454,6 +473,15 @@ class Transcriber:
                 full_text = " ".join(text_parts).strip()
 
             if not full_text:
+                return
+
+            # Non-English hallucination (typically Chinese on noise): drop
+            # it here so it reaches neither the buffer, the log, nor any
+            # subscriber.
+            if contains_cjk(full_text):
+                logger.debug(f"Dropped CJK mistranslation: {full_text!r}")
+                if self.verbose:
+                    logger.info("Dropped CJK mistranslation (not emitted)")
                 return
 
             self.transcription_count += 1
@@ -543,6 +571,10 @@ class _PartialDecoder:
                 text = " ".join(s.text.strip() for s in segments).strip()
             except Exception as e:
                 logger.debug(f"Partial decode error: {e}")
+                continue
+
+            if text and contains_cjk(text):
+                logger.debug(f"Dropped CJK partial: {text!r}")
                 continue
 
             if text:
