@@ -1,2 +1,0 @@
-[console_scripts]
-perception-voice = perception_voice.cli:main

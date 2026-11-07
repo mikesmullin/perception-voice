@@ -3,3 +3,15 @@
 *.sock
 tmp/
 .env
+
+# Leftovers from the Python implementation (still on the v2-era branches).
+# Listed explicitly because a stray `git add -A` in this directory otherwise
+# sweeps them into the Rust repo.
+/build/
+/perception_voice/
+/perception_voice.egg-info/
+/uv.lock
+/PROMPT.md
+__pycache__/
+*.pyc
+.venv/
