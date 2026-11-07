@@ -1,31 +1,35 @@
-# perception-voice systemd user service
-# 
+# perception-voice (Rust) systemd user service
+#
 # Installation:
-#   1. Copy this file to ~/.config/systemd/user/perception-voice.service
-#   2. Edit the ExecStart path to match your installation
-#   3. Enable and start:
-#      systemctl --user daemon-reload
-#      systemctl --user enable perception-voice
-#      systemctl --user start perception-voice
+#   1. cargo build --release
+#   2. Copy this file to ~/.config/systemd/user/perception-voice.service
+#   3. Adjust WorkingDirectory/ExecStart to match your checkout
+#   4. systemctl --user daemon-reload && systemctl --user restart perception-voice
 #
 # View logs:
 #   journalctl --user -u perception-voice -f
 
 [Unit]
-Description=Perception Voice - Speech to Text Service
+Description=Perception Voice - Speech to Text Service (Rust)
+Documentation=https://github.com/mikesmullin/perception-voice
+# sound.target is a no-op under PipeWire -- it does not imply that a capture
+# device exists yet. Ordering after the audio stack avoids opening the mic
+# before anything can serve it. The capture supervisor retries regardless, so
+# this is about avoiding noise at boot, not correctness.
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
 After=sound.target
 
 [Service]
 Type=simple
-# Run from the repo checkout's venv (not the uv tool copy): the tool venv
-# re-resolves dependencies on every reinstall, which is how a cu13 torch
-# slipped in and broke faster-whisper's cu12 CUDA decode.
 WorkingDirectory=/workspace/perception-voice
-ExecStart=/workspace/perception-voice/.venv/bin/perception-voice serve
+ExecStart=/workspace/perception-voice/target/release/perception-voice serve
 Restart=on-failure
 RestartSec=5
+# Shutdown is prompt: the accept loop polls its stop flag every 100ms and the
+# worker threads are cooperative. This is a safety net, not a routine wait.
+TimeoutStopSec=10s
 
-# Ensure audio access
 Environment=PULSE_SERVER=unix:/run/user/%U/pulse/native
 
 [Install]

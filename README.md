@@ -34,7 +34,29 @@ process-level: no interpreter, no torch/transformers import, one static binary.
 | crate | role |
 |---|---|
 | `audio8-asr` | the inference engine: log-mel, audio encoder, projector, int4 LM |
-| `perception-voice` | the server: capture, VAD, buffer, IPC *(next)* |
+| `perception-voice` | the server: supervised capture, dual VAD, buffer, IPC |
+
+## Startup
+
+    server listening on ./perception.sock          13ms
+    audio stream started (16000 Hz, 2 ch)          13ms
+    STT engine ready in 0.65s                     650ms
+
+The socket and the microphone come up first; the model loads behind them on its
+own thread. Audio captured during the load is still segmented and queued. The
+Python build on `main` reached the same point in 1.76s, and before that fix,
+8.2s.
+
+## Capture is supervised, not opened once
+
+A capture stream that fails to open, or opens and then stops delivering
+callbacks, is retried forever with backoff. Both used to be terminal in the
+Python build, which left systemd reporting a healthy unit with a dead
+microphone. A gap of more than 3s in audio callbacks counts as a failure.
+
+Note the limit of this: the watchdog recovers when the *node dies*. Merely
+changing the PipeWire default source does not disturb an already-open ALSA
+stream, so the new default is picked up on the next reopen, not immediately.
 
 ## Model bundle
 

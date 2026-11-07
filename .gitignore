@@ -1,4 +1,5 @@
 /target
+/config.yml
 /reference/dump
 *.sock
 tmp/

@@ -1,130 +1,78 @@
-# perception-voice configuration
-# Copy this file to config.yml before running the server.
-# All fields are required.
+# perception-voice (Rust) configuration
+# Copy to config.yml before running the server.
+#
+# Fields the Python build used that no longer apply here
+# (transcription.model/device/compute_type/beam_size, the realtime: and muse:
+# blocks) are accepted and ignored, so one file can front either build while
+# you switch over.
 
 server:
-  # Unix domain socket path (relative to workspace root, or absolute path)
+  # Unix domain socket. Relative paths anchor at this file's directory.
   socket_path: "perception.sock"
-  
-  # How long to retain transcriptions in memory (minutes)
+
+  # How long utterances stay queryable (minutes).
   buffer_retention_minutes: 30
-  
-  # Phrases to discard (Whisper hallucinates these from coughs/sneezes)
-  # Matching is case-insensitive and alphanumeric-only
+
+  # Phrases to drop. Whisper-family models hallucinate these from coughs and
+  # breaths. Matching is case-insensitive, alphanumerics only.
   discard_phrases:
     - "thank you"
     - "thanks"
     - "you"
 
-  # Optional append-only log of everything overheard, one
-  # timestamp-prefixed line per utterance, with a P95 loudness tag to
-  # help tell speakers apart (`Sun, Sep 6 @ 4:09p | P95 -23dB | ...`).
-  # null or "" = disabled (in-memory buffer only). When set, every
-  # buffered utterance is appended to this file, so the full history
-  # survives beyond buffer_retention_minutes and restarts.
-  # Relative paths anchor at this config file's directory.
-  # Example: "./tmp/convos.md" or "/var/log/perception-voice.log"
-  transcript_log_path: null
+  # Append-only log of everything overheard: one timestamped line per
+  # utterance with a P95 loudness tag, so history outlives the in-memory TTL.
+  # null or "" disables it.
+  transcript_log_path: "./tmp/convos.md"
 
 audio:
-  # Sample rate for audio capture (Hz)
+  # 16 kHz is required: both the VAD and the ASR encoder are fixed at it.
   sample_rate: 16000
-  
-  # Audio buffer size (samples per chunk)
-  # Silero VAD requires at least 512 samples
+
+  # Samples per chunk. Silero needs exactly 512 at 16 kHz.
   buffer_size: 512
-  
-  # Microphone device index (null for auto-detect)
+
+  # Substring matched against input device names. null takes the system
+  # default, re-resolved on every open so it follows `set-default-source`.
   mic_device: null
-  
-  # Minimum duration of speech to transcribe (seconds)
+
+  # Utterances shorter than this are discarded as noise (seconds).
   min_utterance_duration: 1.1
-  
-  # Silence duration before finalizing transcription (seconds)
+
+  # Trailing silence that ends an utterance (seconds). This, not decode time,
+  # is what dominates perceived dictation latency.
   post_speech_silence_duration: 0.6
-  
-  # Buffer duration before speech detection (seconds)
+
+  # Audio retained before speech is detected, so the first syllable is not
+  # clipped (seconds).
   pre_recording_buffer_duration: 1.0
 
-transcription:
-  # STT backend:
-  #   "local"  — faster-whisper on this machine (model/device/etc below)
-  #   "muse"   — Meta Muse Voice Transcribe hosted API (see `muse:` block
-  #              below). Loads NOTHING on the GPU — frees all VRAM. VAD
-  #              stays local, so only detected speech is sent to Meta.
-  #   "audio8" — Audio8-ASR-0.1B, tiny local open-weight model (see
-  #              `audio8:` block; requires the [audio8] extra).
-  backend: "local"
-
-  # Model for transcription (downloaded automatically on first startup)
-  # Options: tiny, tiny.en, base, base.en, small, small.en, medium, medium.en, large-v2, large-v3
-  model: "large-v3"
-  
-  # Compute device: "cpu" or "cuda" (for GPU acceleration)
-  device: "cuda"
-  
-  # Compute type: "int8" (CPU), "float16" (GPU recommended), "float32"
-  compute_type: "float16"
-  
-  # Language code (e.g., "en", "es", "fr", "de", "zh")
-  language: "en"
-  
-  # Beam size for transcription (higher = more accurate, slower)
-  beam_size: 5
-
 vad:
-  # WebRTC sensitivity (0-3, higher = less sensitive to noise)
+  # WebRTC aggressiveness, 0-3. It runs first and short-circuits, so at 3 it
+  # also rejects quiet speech before Silero gets a say. Lower this before
+  # suspecting the model if speech is being missed on a quiet microphone.
   webrtc_sensitivity: 3
-  
-  # Silero sensitivity (0.0-1.0, lower = more sensitive)
+
+  # Silero speech probability threshold, 0.0-1.0. Lower is more sensitive.
   silero_sensitivity: 0.05
-  
-  # Use ONNX for faster Silero inference on CPU
-  silero_use_onnx: true
 
-realtime:
-  # Secondary small model that decodes the in-progress utterance every
-  # `interval` seconds, pushing partial hypotheses to `subscribe words`
-  # subscribers (Ada). The main model above still produces the final text.
-  enabled: true
-  model: "tiny.en"
-  device: "cuda"
-  compute_type: "float16"
-  interval: 0.5
-  beam_size: 1
+  # false leaves WebRTC as the only gate: cheaper, markedly more
+  # trigger-happy on noise.
+  silero_enabled: true
 
-muse:
-  # Meta Muse Voice Transcribe (used when transcription.backend: "muse").
-  # Docs: https://ai.developer.meta.com/docs/speech-to-text
-  # Pricing: $3.00 / 1,000 audio min; only VAD-detected speech is sent.
-
-  # API key ("LLM|..."). null = read META_API_KEY from the environment;
-  # an uncommitted .env file next to config.yml is loaded automatically.
-  api_key: null
-
-  model: "muse-voice-transcribe-1.0"
-
-  # true:  one realtime WebSocket per utterance — live partials feed
-  #        `subscribe words`, final lands ~0.16s after end of speech.
-  # false: buffered WAV POSTed after each utterance (no partials).
-  streaming: true
-
-  realtime_url: "wss://api.meta.ai/v1/asr/realtime"
-  transcribe_url: "https://api.meta.ai/v1/asr/transcribe"
-
-  # Optional recognition biasing
-  language_bias: []
-  keywords: []
-
-  # Seconds to wait on API calls / final transcript before falling back
-  request_timeout: 30.0
+  # Path to silero_vad.onnx. null looks for vad/silero_vad.onnx next to the
+  # ASR bundle directory.
+  silero_model_path: null
 
 audio8:
-  # Audio8-ASR-0.1B (used when transcription.backend: "audio8").
-  # Requires `pip install transformers` (or `uv pip install -e '.[audio8]'`).
-  # Weights download from Hugging Face on first startup. CC-BY-NC-4.0.
-  model: "Audio8/Audio8-ASR-0.1B"
-  device: "cuda"        # "cuda" or "cpu"
-  dtype: "bfloat16"     # "bfloat16" (GPU) or "float32" (CPU)
+  # ONNX bundle directory. null uses $AUDIO8_ASR_BUNDLE, else
+  # ~/.cache/audio8-asr-onnx/model_bundle.
+  bundle_dir: null
+
+  # Generation cap per pass. This also sets how long a single pass may be:
+  # the LM's KV cache holds 512 slots total, audio costs ~1 slot per 1280
+  # samples, and anything longer is split into chunks and rejoined.
   max_new_tokens: 128
-  max_clip_seconds: 30  # model cap; longer utterances are chunked
+
+  # ONNX Runtime intra-op threads. 0 uses all available cores.
+  threads: 0

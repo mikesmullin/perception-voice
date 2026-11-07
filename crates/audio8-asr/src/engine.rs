@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use ndarray::{Array2, Array3};
 use ndarray_npy::NpzReader;
-use ort::environment::Environment;
 use ort::session::Session;
 use ort::value::Tensor;
 use tokenizers::Tokenizer;
@@ -74,8 +73,6 @@ struct Projector {
 }
 
 pub struct Engine {
-    // Sessions borrow from the environment, so it must outlive them; keeping
-    // it in the struct (declared last for drop order) guarantees that.
     audio: Session,
     prefill: Session,
     decode: Session,
@@ -85,7 +82,6 @@ pub struct Engine {
     vocab: usize,
     projector: Projector,
     mel: MelExtractor,
-    _env: Environment,
 }
 
 pub struct Transcription {
@@ -98,14 +94,11 @@ pub struct Transcription {
 
 impl Engine {
     pub fn load(bundle: &Path, threads: usize) -> Result<Self> {
-        let env = ort::init()
-            .with_name("audio8-asr")
-            .build()
-            .map_err(|e| anyhow!("ort init: {e}"))?;
+        let env = crate::ort_env()?;
 
         let open = |name: &str| -> Result<Session> {
             let path = bundle.join(name);
-            let b = Session::builder(&env).map_err(|e| anyhow!("session builder: {e}"))?;
+            let b = Session::builder(env).map_err(|e| anyhow!("session builder: {e}"))?;
             let mut b = b
                 .with_intra_threads(threads)
                 .map_err(|e| anyhow!("with_intra_threads: {e}"))?;
@@ -143,19 +136,66 @@ impl Engine {
             vocab,
             projector,
             mel: MelExtractor::new(),
-            _env: env,
         })
     }
 
-    /// Transcribe mono f32 PCM at 16 kHz. Audio beyond 30s is truncated, as
-    /// that is the encoder's hard limit.
+    /// Transcribe mono f32 PCM at 16 kHz, chunking audio too long for one
+    /// pass and joining the results.
+    ///
+    /// The binding constraint is the LM's 512-slot KV cache, not the
+    /// encoder's 30s window: the prompt spends one slot per audio token
+    /// (~one per 1280 samples) plus ~10 for the instruction, and generation
+    /// needs `max_new_tokens` more. See [`Self::max_chunk_samples`].
     pub fn transcribe(&mut self, audio: &[f32], max_new_tokens: usize) -> Result<Transcription> {
-        let max_samples = MAX_AUDIO_SECONDS * SAMPLE_RATE;
-        let audio = if audio.len() > max_samples {
-            &audio[..max_samples]
-        } else {
-            audio
-        };
+        let limit = Self::max_chunk_samples(max_new_tokens);
+        if audio.len() <= limit {
+            return self.transcribe_one(audio, max_new_tokens);
+        }
+
+        let bounds = chunk_bounds(audio, limit);
+        tracing::info!(
+            "utterance is {:.1}s; transcribing in {} chunks",
+            audio.len() as f64 / SAMPLE_RATE as f64,
+            bounds.len()
+        );
+
+        let mut parts: Vec<String> = Vec::with_capacity(bounds.len());
+        let (mut generated, mut audio_tokens, mut prompt_len) = (0usize, 0usize, 0usize);
+        for &(start, end) in &bounds {
+            let part = self.transcribe_one(&audio[start..end], max_new_tokens)?;
+            generated += part.generated_tokens;
+            audio_tokens += part.audio_tokens;
+            prompt_len = prompt_len.max(part.prompt_len);
+            if !part.text.is_empty() {
+                parts.push(part.text);
+            }
+        }
+        let text = parts.join(" ");
+        Ok(Transcription {
+            raw: text.clone(),
+            text,
+            generated_tokens: generated,
+            audio_tokens,
+            prompt_len,
+        })
+    }
+
+    /// Longest clip that fits one pass, given the generation budget.
+    ///
+    /// Also capped by the encoder's fixed 30s window and its 390-token
+    /// output, whichever binds first.
+    pub fn max_chunk_samples(max_new_tokens: usize) -> usize {
+        // tokens the instruction and turn markers occupy regardless of audio
+        const PROMPT_OVERHEAD: usize = 10;
+        // one slot of slack so an off-by-one in the token rule cannot overflow
+        let budget = MAX_TOTAL_LEN
+            .saturating_sub(max_new_tokens + PROMPT_OVERHEAD + 1)
+            .min(MAX_AUDIO_TOKENS);
+        let by_cache = budget * MERGE_FACTOR * 2 * HOP_LENGTH;
+        by_cache.min(MAX_AUDIO_SECONDS * SAMPLE_RATE)
+    }
+
+    fn transcribe_one(&mut self, audio: &[f32], max_new_tokens: usize) -> Result<Transcription> {
         let sample_count = audio.len().max(1);
 
         let feature = self.features(audio);
@@ -491,6 +531,46 @@ fn load_projector(path: &Path) -> Result<Projector> {
     })
 }
 
+/// Split `audio` into spans no longer than `limit`, preferring to cut where
+/// the signal is quietest.
+///
+/// A fixed-stride split lands mid-word roughly whenever it triggers, and the
+/// two halves then get transcribed as different words. Searching the last
+/// eighth of each span for the lowest-energy 20ms window usually finds a pause
+/// instead, at the cost of a little scan per chunk. If nothing quieter turns
+/// up, it falls back to the hard boundary.
+fn chunk_bounds(audio: &[f32], limit: usize) -> Vec<(usize, usize)> {
+    const WINDOW: usize = SAMPLE_RATE / 50; // 20 ms
+    let mut spans = Vec::new();
+    let mut start = 0usize;
+
+    while start < audio.len() {
+        let hard_end = (start + limit).min(audio.len());
+        if hard_end == audio.len() {
+            spans.push((start, hard_end));
+            break;
+        }
+
+        // search back over the final eighth of the span for a quiet window
+        let search_from = hard_end.saturating_sub(limit / 8).max(start + WINDOW);
+        let mut best_end = hard_end;
+        let mut best_energy = f32::INFINITY;
+        let mut probe = search_from;
+        while probe + WINDOW <= hard_end {
+            let energy: f32 = audio[probe..probe + WINDOW].iter().map(|v| v * v).sum();
+            if energy < best_energy {
+                best_energy = energy;
+                best_end = probe + WINDOW / 2;
+            }
+            probe += WINDOW;
+        }
+
+        spans.push((start, best_end));
+        start = best_end;
+    }
+    spans
+}
+
 /// How many `<|audio|>` slots the prompt gets for a given sample count.
 /// Mirrors the upstream processor's rule exactly, including the integer
 /// division order — the prompt and the encoder must agree or nothing lines up.
@@ -625,6 +705,62 @@ mod tests {
         // 4 rows of width 1 -> 2 rows: means of [1,2] and [3,4]
         let rows = vec![1.0, 2.0, 3.0, 4.0];
         assert_eq!(adaptive_avg_pool_time(&rows, 4, 1, 2), vec![1.5, 3.5]);
+    }
+
+    #[test]
+    fn chunk_limit_leaves_room_for_generation() {
+        // With the default 128-token budget, a chunk must still fit the cache.
+        let limit = Engine::max_chunk_samples(128);
+        let tokens = ark_audio_token_count(limit);
+        assert!(
+            tokens + 10 + 128 <= MAX_TOTAL_LEN,
+            "{tokens} audio + 10 prompt + 128 new > {MAX_TOTAL_LEN}"
+        );
+        // and it should be a useful length, not a degenerate one
+        assert!(limit > 20 * SAMPLE_RATE, "limit {limit} is implausibly short");
+    }
+
+    #[test]
+    fn chunk_limit_shrinks_as_generation_budget_grows() {
+        assert!(Engine::max_chunk_samples(256) < Engine::max_chunk_samples(64));
+    }
+
+    #[test]
+    fn chunking_covers_the_input_without_gaps_or_overlap() {
+        let audio = vec![0.5f32; 100_000];
+        let spans = chunk_bounds(&audio, 30_000);
+        assert!(spans.len() > 1);
+        assert_eq!(spans[0].0, 0);
+        assert_eq!(spans.last().unwrap().1, audio.len());
+        for w in spans.windows(2) {
+            assert_eq!(w[0].1, w[1].0, "spans must abut exactly");
+        }
+        for &(a, b) in &spans {
+            assert!(b > a && b - a <= 30_000, "span {a}..{b} violates the limit");
+        }
+    }
+
+    #[test]
+    fn chunking_prefers_a_quiet_boundary() {
+        // loud everywhere except a silent gap just inside the limit
+        let mut audio = vec![0.5f32; 60_000];
+        let gap = 27_000;
+        for v in audio[gap..gap + 400].iter_mut() {
+            *v = 0.0;
+        }
+        let spans = chunk_bounds(&audio, 30_000);
+        let cut = spans[0].1;
+        assert!(
+            (cut as i64 - (gap + 200) as i64).abs() < 400,
+            "cut at {cut}, expected near the silent gap at {}",
+            gap + 200
+        );
+    }
+
+    #[test]
+    fn single_short_clip_is_one_span() {
+        let audio = vec![0.1f32; 1000];
+        assert_eq!(chunk_bounds(&audio, 30_000), vec![(0, 1000)]);
     }
 
     #[test]
