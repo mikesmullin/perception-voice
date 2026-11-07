@@ -1,7 +1,6 @@
-# perception-voice (Rust)
+# perception-voice
 
-System-level speech-to-text service. Rust rewrite of the Python implementation
-on `main`.
+System-level speech-to-text service.
 
 | branch | implementation |
 |---|---|
