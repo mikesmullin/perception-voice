@@ -1,12 +1,5 @@
 /target
 /config.yml
-# The oracle's tensor dumps are large and regenerable (reference/oracle.py).
-# The two small inputs are NOT ignored: without them the tests that compare
-# against the reference skip silently, and a skipped test is indistinguishable
-# from a passing one in cargo's output.
-/reference/dump/*
-!/reference/dump/input.wav
-!/reference/dump/expected.json
 *.sock
 tmp/
 .env

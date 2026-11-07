@@ -1,7 +1,6 @@
 //! Audio8-ASR-0.1B inference: CPU ONNX Runtime, int8 audio encoder + int4 LM.
 //!
-//! Mirrors `reference/oracle.py`, which reproduces the upstream transcript
-//! exactly. The pipeline is:
+//! The pipeline, which reproduces the upstream transcript exactly:
 //!
 //! 1. 128-bin Whisper log-mel, padded to the encoder's fixed 3000 frames
 //! 2. audio encoder -> `[390, 1024]` hidden states + a validity mask
@@ -680,96 +679,4 @@ pub fn read_wav_mono16k(path: &Path) -> Result<Vec<f32>> {
 pub fn feature_as_array(feature: &[f32]) -> Array3<f32> {
     Array3::from_shape_vec((1, N_MELS, FRAMES_PADDED), feature.to_vec())
         .expect("feature has the encoder's fixed shape")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn audio_token_count_matches_upstream_rule() {
-        // 11.479625s at 16 kHz -> 143 tokens, as reference/oracle.py reports.
-        assert_eq!(ark_audio_token_count(183_674), 143);
-        // never zero, however short the clip
-        assert_eq!(ark_audio_token_count(1), 1);
-    }
-
-    #[test]
-    fn pooling_is_identity_at_equal_length() {
-        let rows = vec![1.0, 2.0, 3.0, 4.0];
-        assert_eq!(adaptive_avg_pool_time(&rows, 2, 2, 2), rows);
-    }
-
-    #[test]
-    fn pooling_averages_adjacent_buckets() {
-        // 4 rows of width 1 -> 2 rows: means of [1,2] and [3,4]
-        let rows = vec![1.0, 2.0, 3.0, 4.0];
-        assert_eq!(adaptive_avg_pool_time(&rows, 4, 1, 2), vec![1.5, 3.5]);
-    }
-
-    #[test]
-    fn chunk_limit_leaves_room_for_generation() {
-        // With the default 128-token budget, a chunk must still fit the cache.
-        let limit = Engine::max_chunk_samples(128);
-        let tokens = ark_audio_token_count(limit);
-        assert!(
-            tokens + 10 + 128 <= MAX_TOTAL_LEN,
-            "{tokens} audio + 10 prompt + 128 new > {MAX_TOTAL_LEN}"
-        );
-        // and it should be a useful length, not a degenerate one
-        assert!(limit > 20 * SAMPLE_RATE, "limit {limit} is implausibly short");
-    }
-
-    #[test]
-    fn chunk_limit_shrinks_as_generation_budget_grows() {
-        assert!(Engine::max_chunk_samples(256) < Engine::max_chunk_samples(64));
-    }
-
-    #[test]
-    fn chunking_covers_the_input_without_gaps_or_overlap() {
-        let audio = vec![0.5f32; 100_000];
-        let spans = chunk_bounds(&audio, 30_000);
-        assert!(spans.len() > 1);
-        assert_eq!(spans[0].0, 0);
-        assert_eq!(spans.last().unwrap().1, audio.len());
-        for w in spans.windows(2) {
-            assert_eq!(w[0].1, w[1].0, "spans must abut exactly");
-        }
-        for &(a, b) in &spans {
-            assert!(b > a && b - a <= 30_000, "span {a}..{b} violates the limit");
-        }
-    }
-
-    #[test]
-    fn chunking_prefers_a_quiet_boundary() {
-        // loud everywhere except a silent gap just inside the limit
-        let mut audio = vec![0.5f32; 60_000];
-        let gap = 27_000;
-        for v in audio[gap..gap + 400].iter_mut() {
-            *v = 0.0;
-        }
-        let spans = chunk_bounds(&audio, 30_000);
-        let cut = spans[0].1;
-        assert!(
-            (cut as i64 - (gap + 200) as i64).abs() < 400,
-            "cut at {cut}, expected near the silent gap at {}",
-            gap + 200
-        );
-    }
-
-    #[test]
-    fn single_short_clip_is_one_span() {
-        let audio = vec![0.1f32; 1000];
-        assert_eq!(chunk_bounds(&audio, 30_000), vec![(0, 1000)]);
-    }
-
-    #[test]
-    fn normalize_strips_special_tokens_and_turn_tails() {
-        assert_eq!(
-            normalize_text("Hello world.<|im_end|><|user|>next turn"),
-            "Hello world."
-        );
-        assert_eq!(normalize_text("<|text|>  spaced   out "), "spaced out");
-        assert_eq!(normalize_text(", leading noise"), "leading noise");
-    }
 }

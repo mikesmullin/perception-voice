@@ -65,33 +65,6 @@ overridable with `AUDIO8_ASR_BUNDLE`. It is the int4/int8 subset of
 `Audio8/Audio8-ASR-0.1B-onnx-runtime`. `lm_logits.onnx` is deliberately absent:
 the cache graphs emit logits directly, so dropping it saves 414 MB.
 
-## reference/oracle.py
-
-A clean-room Python implementation of the pipeline, written from the bundle
-metadata and ONNX graph signatures rather than from the upstream runtime. It
-reproduces the upstream transcript exactly, which is what licenses this port —
-the algorithm is understood, so no third-party inference code is vendored here.
-
-`--dump DIR` writes per-stage tensors (mel, encoder hidden, valid mask, audio
-embeddings, prompt embeddings, expected token ids). The Rust tests diff against
-those, so a regression is localized to a stage instead of showing up as a
-wrong sentence:
-
-    python reference/oracle.py path/to/16k-mono.wav --dump reference/dump
-    cargo test --release
-
-`input.wav` and `expected.json` are committed, so the end-to-end transcript
-check and the VAD-on-real-speech check run from a fresh clone without Python.
-The multi-megabyte tensor dumps are not, so the per-stage mel diff skips until
-the command above regenerates them.
-
-The reason to keep `oracle.py` is provenance rather than scaffolding: it is the
-only thing that explains where `expected.json` came from, and the only way to
-re-derive it when the model bundle changes. Delete it and those values become
-magic numbers. Running it needs Python with `onnxruntime`, `transformers`,
-`tokenizers` and `numpy` — a dependency the Rust build does not otherwise
-have, which is why it lives under `reference/` and is outside the build.
-
 ## Try it
 
     cargo run --release --bin transcribe -- path/to/16k-mono.wav --runs 5

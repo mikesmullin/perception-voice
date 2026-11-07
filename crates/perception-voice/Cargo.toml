@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 audio8-asr = { path = "../audio8-asr" }
 anyhow.workspace = true
-ndarray.workspace = true
 ort.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,9 +17,7 @@ cpal.workspace = true
 webrtc-vad.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-regex.workspace = true
 rustfft.workspace = true
-hound.workspace = true
 signal-hook.workspace = true
 
 [[bin]]
