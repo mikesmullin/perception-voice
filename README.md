@@ -80,6 +80,18 @@ wrong sentence:
     python reference/oracle.py path/to/16k-mono.wav --dump reference/dump
     cargo test --release
 
+`input.wav` and `expected.json` are committed, so the end-to-end transcript
+check and the VAD-on-real-speech check run from a fresh clone without Python.
+The multi-megabyte tensor dumps are not, so the per-stage mel diff skips until
+the command above regenerates them.
+
+The reason to keep `oracle.py` is provenance rather than scaffolding: it is the
+only thing that explains where `expected.json` came from, and the only way to
+re-derive it when the model bundle changes. Delete it and those values become
+magic numbers. Running it needs Python with `onnxruntime`, `transformers`,
+`tokenizers` and `numpy` — a dependency the Rust build does not otherwise
+have, which is why it lives under `reference/` and is outside the build.
+
 ## Try it
 
     cargo run --release --bin transcribe -- path/to/16k-mono.wav --runs 5
